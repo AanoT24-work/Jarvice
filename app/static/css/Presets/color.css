@@ -1,0 +1,19 @@
+* { 
+    margin: 0; 
+    padding: 0; 
+}
+
+:root {
+    --light_pink: #e3b5ff;
+    --box-shadow_pink: #c86dfd;
+    --white: #fff;
+    --text-acva: rgb(0, 255, 255);
+
+/* Эффекты*/
+    --neon-text_violet: 
+        0 0 4px #fff,
+        0 0 8px rgba(200, 109, 253, 0.8),
+        0 0 12px rgba(200, 109, 253, 0.6),
+        0 0 16px rgba(200, 109, 253, 0.4);
+}
+

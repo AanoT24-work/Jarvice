@@ -1,0 +1,18 @@
+ body {
+    min-height: 100vh;
+    overflow: hidden;
+    background: linear-gradient(135deg, 
+        #010024 0%, 
+        #07001a 30%, 
+        #01000c 100%);
+        font-family: 'Cyberfonts', Arial, sans-serif;
+}
+
+@font-face {
+    font-family: 'Cyberfonts';
+    src: url('../fonts/spacetron-3.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap; 
+}
+

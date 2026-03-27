@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{url_for('static', filename='css/main.css')}}">
+    <title>RK</title>
+</head>
+<body>
+    {%include 'Preset/background.html'%} <!-- ЗАДНИЙ ФОН -->
+    <div class="main_container">
+        <div class="border_container"></div>
+        <div class="main_component_container">
+            <div class="indicators_container">
+
+            </div>
+
+            <div class="middle_container">
+                <div class="mini_indicators">
+                    {%include 'Modules/mini_indi_top.html'%} <!-- ПОКАЗАТЕЛИ СКОРОСТИ ИНТЕРНЕТА -->
+                </div>
+                <div class="planet_indicator"></div>
+                <div class="radial_indicators">{%include 'Modules/cpu_gpu.html'%} <!-- РАДИАЛЬНЫЕ ПОКАЗАТЕЛИ CPU И GPU --></div>
+            </div>
+
+            <div class="right_container">
+                {%include 'Modules/account.html'%} <!-- ПАНЕЛЬ ПОКАЗАТЕЛЕЙ -->
+            </div>
+        </div>
+        <div class="bottom_component_container"></div>
+    </div>
+
+    
+                    
+                
+                    
+              
+                
+            
+    
+    
+  
+</body>
+</html>
+
+    
