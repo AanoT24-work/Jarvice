@@ -1,10 +1,13 @@
-""" Файл для определения ОС перед началом всех работ и функций, которые подходят и для windows и linux """
+"""Файл для определения ОС и кроссплатформенных функций"""
 import os
 import sys
 import json
 import asyncio
 import logging
 import platform
+from unittest import result
+
+import pythonping
 
 from collections import deque
 from typing import AsyncGenerator, Dict, List, Optional
@@ -14,7 +17,6 @@ import psutil
 logger = logging.getLogger(__name__)
 
 
-
 class SystemMonitor:
     def __init__(self, name: str, interval: Optional[float], history_size: Optional[int] = None):
         self.name = name
@@ -22,7 +24,7 @@ class SystemMonitor:
         self.history = deque(maxlen=history_size) if history_size is not None else None
 
     async def measure(self) -> Optional[dict]:
-        raise NotImplementedError("Метод measure должен быть реализован")
+        raise NotImplementedError("Subclass must implement measure()")
 
     def get_history(self) -> Optional[List[float]]:
         return None if self.history is None else list(self.history)
@@ -58,21 +60,23 @@ class SystemMonitor:
                 yield f"data: {json.dumps(data)}\n\n"
 
             except Exception as e:
-                logger.error(f"Ошибка в stream для {self.name}: {e}")
+                logger.error(f"Stream error [{self.name}]: {e}")
                 data = {self.name: None, 'error': str(e)}
                 if self.history is not None:
                     data['history'] = self.get_history()
                 yield f"data: {json.dumps(data)}\n\n"
+
             if self.interval:
                 await asyncio.sleep(self.interval)
+
 
 class OperationSystemMonitor(SystemMonitor):
     def __init__(self, interval: Optional[float] = 3, history_size: Optional[int] = 0):
         super().__init__(name='operation_system', interval=interval, history_size=history_size)
-        self.cache_oc_name = None          # Кэш значение операционной системы
-        self.cache_oc_version = None       # Кэш значение версии операционной системы
-        self.linux_flag = False            # Кэш значение, является ли ОС - linux
-        self.windows_flag = False          # Кэш значение, является ли ОС - windows
+        self.cache_oc_name = None
+        self.cache_oc_version = None
+        self.linux_flag = False
+        self.windows_flag = False
 
     async def measure(self) -> Optional[dict]:
         if self.cache_oc_name is not None:
@@ -82,34 +86,34 @@ class OperationSystemMonitor(SystemMonitor):
                 'windows_flag': self.windows_flag
             }
 
-        win_marker = "windows"
-        lin_marker = "linux"
-
         try:
             oc_name = await asyncio.wait_for(asyncio.to_thread(platform.system), timeout=5)
             if self.cache_oc_name is None and oc_name is not None:
                 self.cache_oc_name = oc_name
+
             oc_version = await asyncio.wait_for(asyncio.to_thread(platform.release), timeout=5)
             if self.cache_oc_version is None and oc_version is not None:
                 self.cache_oc_version = oc_version
+
         except asyncio.TimeoutError:
-            logger.error(f"Превышено время ожидания определения ОС")
+            logger.error("OS detection timeout (5s)")
             return None
         except Exception as e:
-            logger.error(f"Ошибка определения ОС: {e}")
+            logger.error(f"OS detection failed: {e}")
             return None
 
         if self.cache_oc_name is not None:
             oc_name_lower = self.cache_oc_name.lower()
-            self.windows_flag = oc_name_lower.startswith(win_marker)
-            self.linux_flag = oc_name_lower.startswith(lin_marker)
-        result = {
+            self.windows_flag = oc_name_lower.startswith("windows")
+            self.linux_flag = oc_name_lower.startswith("linux")
+
+        logger.debug(f"OS: {self.cache_oc_name} {self.cache_oc_version}")
+
+        return {
             'OC': f"{self.cache_oc_name}:{self.cache_oc_version}",
             'linux_flag': self.linux_flag,
             'windows_flag': self.windows_flag
-            }
-        logger.debug(f'{self.cache_oc_name}')
-        return result
+        }
 
 
 class CPUMonitor_All(SystemMonitor):
@@ -118,58 +122,93 @@ class CPUMonitor_All(SystemMonitor):
 
     async def measure(self) -> Optional[dict]:
         try:
-            cpu_percent = await asyncio.wait_for(asyncio.to_thread(psutil.cpu_percent, interval=1), timeout=5)
+            cpu_percent = await asyncio.wait_for(
+                asyncio.to_thread(psutil.cpu_percent, interval=1), timeout=5
+            )
             result = round(cpu_percent, 2) if cpu_percent is not None else None
-            logger.debug(f'CPUMonitor.measure(): {result}')
+            logger.debug(f"CPU usage: {result}%")
             return {'cpu': result}
+
         except asyncio.TimeoutError:
-            logger.error(f"Превышено время ожидания определения нагрузки CPU")
+            logger.error("CPU load timeout (5s)")
             return None
         except Exception as e:
-            logger.error(f'Ошибка CPUMonitor.measure(): {e}%')
+            logger.error(f"CPU load failed: {e}")
             return None
+
 
 class RAMMonitor_All(SystemMonitor):
     def __init__(self, interval: Optional[float] = 3, history_size: Optional[int] = 10):
         super().__init__('ram', interval, history_size)
         self.cache_ram_total = None
-
         self.ram = None
 
     async def init_ram(self):
         try:
-            self.ram = await asyncio.wait_for(asyncio.to_thread(psutil.virtual_memory), timeout=5)
+            self.ram = await asyncio.wait_for(
+                asyncio.to_thread(psutil.virtual_memory), timeout=5
+            )
             if self.ram is None:
-                logger.error(f'Нет данных о RAM в RAMMonitor.measure()')
+                logger.warning("No RAM data received")
                 return None
             return self.ram
 
         except asyncio.TimeoutError:
-            logger.error('Таймаут RAMMonitor.measure()')
+            logger.error("RAM read timeout (5s)")
             return None
         except Exception as e:
-            logger.error(f'Ошибка RAMMonitor.measure(): {e}')
+            logger.error(f"RAM read failed: {e}")
             return None
 
     async def measure(self) -> Optional[dict]:
         try:
             ram = await self.init_ram()
+            if ram is None:
+                return None
 
-            if self.cache_ram_total is None and ram is not None:
+            if self.cache_ram_total is None:
                 self.cache_ram_total = ram.total
+                logger.debug(f"RAM total: {ram.total / (1024 ** 3):.1f} GB")
 
             results = {
-                'ram_used': round(ram.used / (1024 ** 3), 1) if ram is not None else None,
-                'ram_total': round(ram.total / (1024 ** 3), 1) if ram is not None else None,
-                'ram_percent': round(ram.percent, 1) if ram is not None else None
+                'ram_used': round(ram.used / (1024 ** 3), 1),
+                'ram_total': round(ram.total / (1024 ** 3), 1),
+                'ram_percent': round(ram.percent, 1)
             }
-            logger.info(f'Результат: {results}')
+
+            logger.debug(f"RAM: {results['ram_used']}/{results['ram_total']} GB ({results['ram_percent']}%)")
             return results
 
         except asyncio.TimeoutError:
-            logger.error('Таймаут RAMMonitor.measure()')
+            logger.error("RAM measure timeout (5s)")
             return None
         except Exception as e:
-            logger.error(f'Ошибка RAMMonitor.measure(): {e}')
+            logger.error(f"RAM measure failed: {e}")
+            return None
+
+class Network_system_All(SystemMonitor):
+    def __init__(self, interval: Optional[float] = 120, history_size: Optional[int] = 10):
+        super().__init__('network_system', interval, history_size)
+
+    async def measure(self) -> Optional[dict]:
+        try:
+            net_data = await asyncio.wait_for(asyncio.to_thread(psutil.net_io_counters), timeout=5)
+            if net_data is None:
+                logger.error("Network system data received")
+                return None
+    # Прописать анализи того на что +- тратиться трафик
+            result = {
+                'bytes_sent': net_data.bytes_sent,
+                'bytes_recv': net_data.bytes_recv,
+                'pack_sent': net_data.packets_sent,
+                'pack_recv': net_data.packets_recv
+            }
+            logger.debug(f"NETWORK DATA: {result}")
+            return result
+        except asyncio.TimeoutError:
+            logger.error(f'Network_system measure timeout (5s)')
+            return None
+        except Exception as e:
+            logger.error(f'Network system measure failed: {e}')
             return None
 

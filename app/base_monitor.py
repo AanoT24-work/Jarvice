@@ -3,8 +3,8 @@ import json
 import asyncio  # Добавляем asyncio
 from typing import AsyncGenerator  # Меняем тип
 
-from Options.system_all import CPUMonitor_All, OperationSystemMonitor, RAMMonitor_All, StorageMonitor_All
-from Options.system_linux import CPUMonitor_Linux
+from Options.system_all import CPUMonitor_All, OperationSystemMonitor, RAMMonitor_All, Network_system_All
+from Options.system_linux import CPUMonitor_Linux, StorageMonitor_Linux
 from Options.system_windows import CPUMonitor_Windows
 
 
@@ -15,16 +15,19 @@ class SystemMonitorFacade:
         # Создаем все мониторы, передавая os_monitor туда, где нужно
         self.common_cpu = CPUMonitor_All(interval=1, history_size=10)
         self.common_ram = RAMMonitor_All(interval=1, history_size=10)
-        self.common_storage = StorageMonitor_All(interval=1, history_size=10)
+        self.common_network_system = Network_system_All(interval=3, history_size=10)
         self.linux_cpu = CPUMonitor_Linux(oc_flag=self.os_monitor, interval=1, history_size=10)
+        self.linux_storage = StorageMonitor_Linux(oc=self.linux_cpu, interval=1, history_size=10)
         self.windows_cpu = CPUMonitor_Windows(oc_flag=self.os_monitor, interval=1, history_size=10)
+
         self.monitors = {
             'oc': self.os_monitor,
             'common_cpu': self.common_cpu,
             'linux_cpu': self.linux_cpu,
             'windows_cpu': self.windows_cpu,
             'common_ram': self.common_ram,
-            'common_storage': self.common_storage
+            'common_storage': self.linux_storage,
+            'common_network_system': self.common_network_system
 
         }
     
