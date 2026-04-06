@@ -1,4 +1,4 @@
-""" Файл для получения данных с датчиков для linux """
+"""Файл для получения данных с датчиков для Linux"""
 import asyncio
 import logging
 from typing import Optional
@@ -14,17 +14,13 @@ logger = logging.getLogger(__name__)
 class CPUMonitor_Linux(SystemMonitor):
     def __init__(self, oc_flag: OperationSystemMonitor, interval: Optional[float] = 3, history_size: Optional[int] = 10):
         super().__init__('cpu_linux', interval, history_size)
-        # Внешние зависимости
-        self.oc_flag = oc_flag  # Ссылка на объект-флаг ОС (нужен для проверки, что мы в Linux)
+        self.oc_flag = oc_flag
 
-        # Публичные атрибуты (доступны из других классов)
-        self.cpu_temp = None  # Последняя измеренная температура CPU (градусы Цельсия), обновляется в detailed_info()
-
-        # Приватные атрибуты кэша (используются только внутри класса)
-        self.cache_cpu_name = None  # Имя модели процессора (например "AMD Ryzen 5 5500U"), берется из cpuinfo
-        self.cache_amd_flag = False  # True если процессор AMD, False если Intel или другой
-        self.cache_intel_flag = False  # True если процессор Intel, False если AMD или другой
-        self._cpu_info_cache = None  # Полный словарь данных от cpuinfo
+        self.cpu_temp = None
+        self.cache_cpu_name = None
+        self.cache_amd_flag = False
+        self.cache_intel_flag = False
+        self._cpu_info_cache = None
 
     async def init_oc(self) -> bool:
         await self.oc_flag.measure()
@@ -43,17 +39,17 @@ class CPUMonitor_Linux(SystemMonitor):
 
             cpu_name = self._cpu_info_cache.get('brand_raw')
             if cpu_name is None:
-                logger.error('Нет данных об имени процессора')
+                logger.warning("CPU name not found")
                 return None
 
             if self.cache_cpu_name is None:
                 self.cache_cpu_name = cpu_name
 
         except asyncio.TimeoutError:
-            logger.error('Таймаут получения данных о процессоре')
+            logger.error("CPU info timeout (5s)")
             return None
         except Exception as e:
-            logger.error(f"Ошибка получения данных о CPU - {e}")
+            logger.error(f"CPU info failed: {e}")
             return None
 
         if self.cache_cpu_name:
@@ -69,26 +65,21 @@ class CPUMonitor_Linux(SystemMonitor):
 
     async def measure(self) -> Optional[dict]:
         if not await self.init_oc():
-            logger.warning('Система не является Linux системой')
+            logger.debug("Not a Linux system")
             return None
         if not await self.init_cpu():
-            logger.error('Нет данных о имени CPU для Linux')
             return None
         return {'cpu_name': self.cache_cpu_name}
 
     async def detailed_info(self) -> Optional[dict]:
         if not await self.init_oc():
-            logger.warning('Система не является Linux системой')
+            logger.debug("Not a Linux system")
             return None
         if not await self.init_cpu():
-            logger.error('Нет данных о имени CPU для Linux')
             return None
 
         try:
-            # Используем кэш, не дергаем cpu_stat повторно
             cpu_gz = self._cpu_info_cache.get('hz_advertised_friendly')
-            if cpu_gz is None:
-                logger.debug('Нет данных о частоте процессора')
 
             temp_sensor = await asyncio.wait_for(
                 asyncio.to_thread(psutil.sensors_temperatures), timeout=5
@@ -100,12 +91,13 @@ class CPUMonitor_Linux(SystemMonitor):
                 sensor_key = 'coretemp'
             else:
                 sensor_key = None
-                logger.warning('Неизвестный производитель CPU')
+                logger.debug(f"Unknown CPU vendor: {self.cache_cpu_name}")
 
             if sensor_key:
                 sensor_data = temp_sensor.get(sensor_key)
                 if sensor_data and len(sensor_data) > 0:
                     self.cpu_temp = sensor_data[0][1]
+                    logger.debug(f"Temp {self.cpu_temp}°C from {sensor_key}")
 
             return {
                 'cpu_temp': self.cpu_temp,
@@ -113,27 +105,69 @@ class CPUMonitor_Linux(SystemMonitor):
             }
 
         except asyncio.TimeoutError:
-            logger.error('Таймаут получения данных о процессоре')
+            logger.error("Temperature read timeout (5s)")
             return None
         except Exception as e:
-            logger.error(f'Ошибка получения данных: {e}')
+            logger.error(f"Detailed info failed: {e}")
             return None
 
 
 class StorageMonitor_Linux(SystemMonitor):
-    def __init__(self, oc: CPUMonitor_Linux, interval: Optional[float] = 3,
-                 history_size: Optional[int] = 10):
-        super().__init__('cpu_linux', interval, history_size)
-        # Внешние зависимости
-        self.oc_flag = oc # Ссылка на объект-флаг ОС (нужен для проверки, что мы в Linux)
-
+    def __init__(self, oc: CPUMonitor_Linux, interval: Optional[float] = 3, history_size: Optional[int] = 10):
+        super().__init__('storage_linux', interval, history_size)
+        self.oc_flag = oc
         self.cache_storage_total = None
+
     async def measure(self) -> Optional[dict]:
+        result_storage = {}
+
         try:
-            storage_data = await asyncio.wait_for()
+            partitions = await asyncio.wait_for(
+                asyncio.to_thread(psutil.disk_partitions),
+                timeout=5.0
+            )
+
+            for part in partitions:
+                if (
+                        part.device and
+                        part.device.startswith('/dev/') and
+                        'loop' not in part.device and
+                        part.fstype and
+                        part.fstype not in ['squashfs', 'tmpfs']
+                ):
+                    try:
+                        usage = await asyncio.wait_for(
+                            asyncio.to_thread(psutil.disk_usage, part.mountpoint),
+                            timeout=5
+                        )
+
+                        device_name = part.device.split('/')[-1]
+
+                        result_storage[device_name] = {
+                            'mountpoint': part.mountpoint,
+                            'used_gb': round(usage.used / (1024 ** 3), 2),
+                            'free_gb': round(usage.free / (1024 ** 3), 2),
+                            'total_gb': round(usage.total / (1024 ** 3), 2),
+                            'used_percent': usage.percent,
+                        }
+
+                    except Exception as e:
+                        logger.warning(f"Skip {part.device}: {e}")
+
         except asyncio.TimeoutError:
-            logger.error(f'')
+            logger.error("Disk read timeout (5s)")
             return None
         except Exception as e:
-            logger.error(f'')
+            logger.error(f"Disk scan failed: {e}")
             return None
+
+        disk_count = len(result_storage)
+        if disk_count:
+            logger.debug(f"Found {disk_count} physical disks")
+            return {
+                'disks': result_storage,
+                'total_disks': disk_count,
+            }
+
+        logger.warning("No physical disks found")
+        return None
