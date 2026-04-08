@@ -191,17 +191,35 @@ class Network_system_All(SystemMonitor):
         super().__init__('network_system', interval, history_size)
 
     async def measure(self) -> Optional[dict]:
+        net_data = lambda: asyncio.wait_for(asyncio.to_thread(psutil.net_io_counters), timeout=5)
         try:
-            net_data = await asyncio.wait_for(asyncio.to_thread(psutil.net_io_counters), timeout=5)
-            if net_data is None:
+            net_data_first = await net_data()
+            if net_data_first is None:
                 logger.error("Network system data received")
                 return None
-    # Прописать анализи того на что +- тратиться трафик
+
+            first_mbytes_sent = net_data_first.bytes_sent
+            first_mbytes_recv = net_data_first.bytes_recv
+            first_pack_sent = net_data_first.packets_sent
+            first_pack_recv = net_data_first.packets_recv
+
+            await asyncio.sleep(10)
+
+            net_data_second = await net_data()
+            if net_data_second is None:
+                logger.error("Network system data received")
+                return None
+            second_mbytes_sent = net_data_second.bytes_sent
+            second_mbytes_recv = net_data_second.bytes_recv
+            second_pack_sent = net_data_second.packets_sent
+            second_pack_recv = net_data_second.packets_recv
+
             result = {
-                'bytes_sent': net_data.bytes_sent,
-                'bytes_recv': net_data.bytes_recv,
-                'pack_sent': net_data.packets_sent,
-                'pack_recv': net_data.packets_recv
+                'sdv': (second_mbytes_sent - first_mbytes_sent),
+                'mbytes_sent': round((second_mbytes_sent - first_mbytes_sent)/(1024**2)/10, 5),
+                'mbytes_recv': round((second_mbytes_recv - first_mbytes_recv)/(1024**2)/10, 5),
+                'pack_sent': (second_pack_sent - first_pack_sent),
+                'pack_recv': (second_pack_recv - first_pack_recv)
             }
             logger.debug(f"NETWORK DATA: {result}")
             return result
@@ -211,4 +229,3 @@ class Network_system_All(SystemMonitor):
         except Exception as e:
             logger.error(f'Network system measure failed: {e}')
             return None
-
