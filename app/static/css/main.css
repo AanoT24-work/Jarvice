@@ -1,0 +1,78 @@
+.main_container{
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+}
+
+.border_container{
+    position: absolute;
+    background-image: url('/static/photo/main.png');
+    background-repeat: no-repeat;
+    background-position: center;
+    transform: scaleX(1.2);
+    filter: brightness(100%);
+
+    width: 100%;
+    height: 100%;
+}
+
+
+.main_component_container{
+    display: flex;
+    width: 87%;
+    height: 83%;
+    margin-top: 1%;
+}
+
+.indicators_container{
+    display: flex;
+    width: 25%;
+    height: 100%;
+
+    border: 1px solid aliceblue;
+}
+
+.middle_container{
+    display: flex;
+    width: 55%;
+    height: 100%;
+    justify-content: center;
+    flex-direction: column;
+}
+
+.right_container{
+    display: flex;
+    width: 20%;
+    height: 100%;
+    justify-content: flex-end;
+    border: 1px solid aliceblue;
+}
+
+.mini_indicators {
+    display: flex;
+    width: 100%;
+    height: 12%;
+    align-items: center;
+    justify-content: center; /* Центрируем по горизонтали */
+    gap: 6px; /* Отступ между индикаторами */
+    border: 1px solid red;
+}
+
+.planet_indicator{
+    display: flex;
+    width: 100%;
+    height: 68%;
+}
+.radial_indicators{
+    display: flex;
+    width: 100%;
+    height: 20%;
+    justify-content: center;
+    align-items: center;
+
+    border: 1px solid red;
+}
+

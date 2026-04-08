@@ -1,0 +1,18 @@
+<link rel="stylesheet" href="{{url_for('static', filename='css/Modules/cpu_gpu.css')}}">
+<div class="cpu_gpu-container">
+    <div class="cpu-container">
+        <div class="cpu-inf">
+            <span>CPU</span>
+            <div class="cpu-load" id="cpu-load"></div>
+            <span>LOAD</span>
+        </div>
+    </div>
+    <div class="gpu-container">
+        <div class="gpu-inf">
+            <span>GPU</span>
+            <div class="gpu-load" id="gpu-load"></div>
+            <span>LOAD</span>
+        </div>
+    </div>
+</div>
+<script src="{{url_for('static', filename='js/AJAX/cpu_gpu.js')}}"></script>
