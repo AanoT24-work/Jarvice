@@ -119,8 +119,10 @@ class StorageMonitor_Linux(SystemMonitor):
         self.cache_storage_total = None
 
     async def measure(self) -> Optional[dict]:
+        if not await self.oc_flag.init_oc:
+            logger.debug("Not a Linux system")
+            return None
         result_storage = {}
-
         try:
             partitions = await asyncio.wait_for(
                 asyncio.to_thread(psutil.disk_partitions),
