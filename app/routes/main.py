@@ -1,81 +1,85 @@
+import time
 import asyncio
 import json
 from datetime import datetime
-from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse, HTMLResponse
-from fastapi.templating import Jinja2Templates
-from pathlib import Path
+from flask import Blueprint, Response, redirect, render_template, jsonify
 
-router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
+main = Blueprint('main', __name__)
 
 from app.base_monitor import SystemMonitorFacade
-
 monitor_facade = SystemMonitorFacade()
 
+@main.route('/')
+def index():
+    return redirect('/main.html')
 
-@router.get("/")
-async def index():
-    return HTMLResponse(content="<script>window.location.href='/main.html';</script>", status_code=200)
+@main.route('/main.html')
+def main_page():
+    return render_template('main.html', current_time=datetime.now())
 
+@main.route('/test')
+def test():
+    """Тестовый маршрут для проверки работы"""
+    return jsonify({"status": "ok", "message": "Flask работает"})
 
-@router.get("/main.html")
-async def main_page(request: Request):
-    return templates.TemplateResponse("main.html", {"request": request, "current_time": datetime.now()})
-
-
-@router.get("/test")
-async def test():
-    return {"status": "ok", "message": "FastAPI работает"}
-
-
-@router.get("/debug")
+# ОТЛАДОЧНЫЙ МАРШРУТ
+@main.route('/debug')
 async def debug():
     """Проверка, что мониторы работают"""
     data = {
         'measurements': {},
         'detailed_info': {}
     }
-
+    
     for name, monitor in monitor_facade.monitors.items():
         try:
+            # measure
             measure_result = await monitor.measure()
             data['measurements'][name] = {
                 'value': measure_result,
                 'status': 'ok'
             }
-
+            
+            # detailed_info
             if hasattr(monitor, 'detailed_info'):
                 detailed_result = await monitor.detailed_info()
                 data['detailed_info'][name] = {
                     'value': detailed_result,
                     'status': 'ok'
                 }
-
+            
         except Exception as e:
             data['measurements'][name] = {
                 'error': str(e),
                 'status': 'error'
             }
+            
+    return jsonify(data)
 
-    return data
+# Вспомогательная функция для запуска асинхронного генератора в синхронном контексте
+def run_async_generator(async_gen):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        while True:
+            try:
+                chunk = loop.run_until_complete(async_gen.__anext__())
+                yield chunk
+            except StopAsyncIteration:
+                break
+    finally:
+        loop.close()
 
-
-async def event_stream(generator_func):
-    """Генератор SSE событий"""
-    async for chunk in generator_func:
-        yield chunk
-
-
-@router.get("/cpu")
-async def cpu_stream():
+# SSE потоки - ВСЕ должны быть синхронными функциями
+@main.route('/cpu')
+def cpu_stream():
     async def generate():
         async for chunk in monitor_facade.monitors['cpu'].stream():
             yield chunk
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
+    
+    return Response(
+        run_async_generator(generate()),
+        mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
@@ -83,16 +87,15 @@ async def cpu_stream():
         }
     )
 
-
-@router.get("/ram")
-async def ram_stream():
+@main.route('/ram')
+def ram_stream():
     async def generate():
         async for chunk in monitor_facade.monitors['ram'].stream():
             yield chunk
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
+    
+    return Response(
+        run_async_generator(generate()),
+        mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
@@ -100,9 +103,8 @@ async def ram_stream():
         }
     )
 
-
-@router.get("/gpu")
-async def gpu_stream():
+@main.route('/gpu')
+def gpu_stream():
     async def generate():
         gpu_monitor = monitor_facade.monitors['gpu']
         while True:
@@ -118,10 +120,10 @@ async def gpu_stream():
                 error_data = {'gpu': 0, 'error': str(e)}
                 yield f"data: {json.dumps(error_data)}\n\n"
             await asyncio.sleep(gpu_monitor.interval)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
+    
+    return Response(
+        run_async_generator(generate()),
+        mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
@@ -129,36 +131,36 @@ async def gpu_stream():
         }
     )
 
-
-@router.get("/network")
-async def network_stream():
+@main.route('/network')
+def network_stream():
+    # Проверяем, какой ключ используется для сетевого монитора
     network_key = None
     for key in monitor_facade.monitors.keys():
         if 'network' in key.lower():
             network_key = key
             break
-
+    
     if network_key is None:
-        async def error_generate():
+        # Если сетевой монитор не найден, возвращаем ошибку
+        def error_generate():
             yield f"data: {json.dumps({'error': 'Network monitor not found'})}\n\n"
-
-        return StreamingResponse(
+        return Response(
             error_generate(),
-            media_type="text/event-stream",
+            mimetype='text/event-stream',
             headers={
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
                 'Access-Control-Allow-Origin': '*'
             }
         )
-
+    
     async def generate():
         async for chunk in monitor_facade.monitors[network_key].stream():
             yield chunk
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
+    
+    return Response(
+        run_async_generator(generate()),
+        mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',

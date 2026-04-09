@@ -75,17 +75,10 @@ class OperationSystemMonitor(SystemMonitor):
         super().__init__(name='operation_system', interval=interval, history_size=history_size)
         self.cache_oc_name = None
         self.cache_oc_version = None
-        self.linux_flag = False
-        self.windows_flag = False
 
     async def measure(self) -> Optional[dict]:
         if self.cache_oc_name is not None:
-            return {
-                'OC': f"{self.cache_oc_name}:{self.cache_oc_version}",
-                'linux_flag': self.linux_flag,
-                'windows_flag': self.windows_flag
-            }
-
+            return {'OC': f"{self.cache_oc_name}:{self.cache_oc_version}"}
         try:
             oc_name = await asyncio.wait_for(asyncio.to_thread(platform.system), timeout=5)
             if self.cache_oc_name is None and oc_name is not None:
@@ -102,19 +95,8 @@ class OperationSystemMonitor(SystemMonitor):
             logger.error(f"OS detection failed: {e}")
             return None
 
-        if self.cache_oc_name is not None:
-            oc_name_lower = self.cache_oc_name.lower()
-            self.windows_flag = oc_name_lower.startswith("windows")
-            self.linux_flag = oc_name_lower.startswith("linux")
-
         logger.debug(f"OS: {self.cache_oc_name} {self.cache_oc_version}")
-
-        return {
-            'OC': f"{self.cache_oc_name}:{self.cache_oc_version}",
-            'linux_flag': self.linux_flag,
-            'windows_flag': self.windows_flag
-        }
-
+        return {'OC': f"{self.cache_oc_name}:{self.cache_oc_version}"}
 
 class CPUMonitor_All(SystemMonitor):
     def __init__(self, interval: Optional[float] = 3, history_size: Optional[int] = 10):
@@ -187,11 +169,15 @@ class RAMMonitor_All(SystemMonitor):
             return None
 
 class Network_system_All(SystemMonitor):
-    def __init__(self, interval: Optional[float] = 120, history_size: Optional[int] = 10):
+    def __init__(self, interval: Optional[float] = 20, history_size: Optional[int] = 10):
         super().__init__('network_system', interval, history_size)
 
     async def measure(self) -> Optional[dict]:
         net_data = lambda: asyncio.wait_for(asyncio.to_thread(psutil.net_io_counters), timeout=5)
+        mbytes_sent = 0
+        mbytes_recv = 0
+        delta_time = 5
+        delta_bytes = 100000
         try:
             net_data_first = await net_data()
             if net_data_first is None:
@@ -203,7 +189,7 @@ class Network_system_All(SystemMonitor):
             first_pack_sent = net_data_first.packets_sent
             first_pack_recv = net_data_first.packets_recv
 
-            await asyncio.sleep(10)
+            await asyncio.sleep(delta_time)
 
             net_data_second = await net_data()
             if net_data_second is None:
@@ -214,12 +200,20 @@ class Network_system_All(SystemMonitor):
             second_pack_sent = net_data_second.packets_sent
             second_pack_recv = net_data_second.packets_recv
 
+            if second_mbytes_sent - first_mbytes_sent >= delta_bytes:
+                mbytes_sent = round((second_mbytes_sent - first_mbytes_sent) / (1024 ** 2) / delta_time, 2)
+            elif second_mbytes_sent - first_mbytes_sent < delta_bytes:
+                mbytes_sent = round((second_mbytes_sent - first_mbytes_sent) / (1024 ** 2) / delta_time, 4)
+            if second_mbytes_recv - first_mbytes_recv >= delta_bytes:
+                mbytes_recv = round((second_mbytes_recv - first_mbytes_recv)/(1024**2)/delta_time, 2)
+            elif second_mbytes_recv - first_mbytes_recv < delta_bytes:
+                mbytes_recv = round((second_mbytes_recv - first_mbytes_recv) / (1024 ** 2) / delta_time, 4)
+
             result = {
-                'sdv': (second_mbytes_sent - first_mbytes_sent),
-                'mbytes_sent': round((second_mbytes_sent - first_mbytes_sent)/(1024**2)/10, 5),
-                'mbytes_recv': round((second_mbytes_recv - first_mbytes_recv)/(1024**2)/10, 5),
-                'pack_sent': (second_pack_sent - first_pack_sent),
-                'pack_recv': (second_pack_recv - first_pack_recv)
+                'mbytes_sent': mbytes_sent,
+                'mbytes_recv': mbytes_recv,
+                'pack_sent': round((second_pack_sent - first_pack_sent)/delta_time),
+                'pack_recv': round((second_pack_recv - first_pack_recv)/delta_time)
             }
             logger.debug(f"NETWORK DATA: {result}")
             return result
@@ -229,3 +223,4 @@ class Network_system_All(SystemMonitor):
         except Exception as e:
             logger.error(f'Network system measure failed: {e}')
             return None
+
