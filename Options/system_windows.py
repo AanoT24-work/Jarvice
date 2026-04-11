@@ -1,4 +1,4 @@
-''' Файл для получения данных с датчиков для windows '''
+''' Файл для поrлучения данных с датчиков для windows '''
 import asyncio
 import logging
 from typing import Optional
