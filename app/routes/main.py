@@ -1,169 +1,234 @@
-import time
 import asyncio
 import json
+import logging
 from datetime import datetime
-from flask import Blueprint, Response, redirect, render_template, jsonify
+from pathlib import Path
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse, HTMLResponse
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from app.base_monitor import OC, SystemMonitorFacade, Location
 
-main = Blueprint('main', __name__)
+logger = logging.getLogger(__name__)
+router = APIRouter()
 
-from app.base_monitor import SystemMonitorFacade
-monitor_facade = SystemMonitorFacade()
+# Конфигурация
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+jinja_env = Environment(
+    loader=FileSystemLoader(str(TEMPLATES_DIR)),
+    autoescape=select_autoescape(['html', 'xml']),
+    enable_async=True
+)
 
-@main.route('/')
-def index():
-    return redirect('/main.html')
+# Глобальное состояние
+monitor_facade = None
+is_initialized = False
 
-@main.route('/main.html')
-def main_page():
-    return render_template('main.html', current_time=datetime.now())
 
-@main.route('/test')
-def test():
-    """Тестовый маршрут для проверки работы"""
-    return jsonify({"status": "ok", "message": "Flask работает"})
+async def init_monitors():
+    """Инициализация мониторов"""
+    global monitor_facade, is_initialized
 
-# ОТЛАДОЧНЫЙ МАРШРУТ
-@main.route('/debug')
-async def debug():
-    """Проверка, что мониторы работают"""
-    data = {
-        'measurements': {},
-        'detailed_info': {}
+    if is_initialized:
+        return True
+
+    logger.info("Инициализация мониторов...")
+    try:
+        monitor_facade = SystemMonitorFacade(oc_monitor=OC())
+        result = await monitor_facade.add_oc_monitor()
+
+        if result is not None:
+            is_initialized = True
+            logger.info(f"Мониторы готовы: {list(monitor_facade.monitors.keys())}")
+            return True
+        else:
+            logger.warning("ОС-специфичные мониторы не активированы, но базовые работают")
+            is_initialized = True
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка инициализации: {e}")
+        return False
+
+
+# ============ ЭНДПОИНТЫ ============
+
+@router.get("/")
+async def index():
+    """Перенаправление на дашборд"""
+    return RedirectResponse(url="/dashboard")
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    """Главная страница"""
+    template = jinja_env.get_template("main.html")
+
+    def url_for(name: str, **kwargs):
+        return request.url_for(name, **kwargs)
+
+    html = await template.render_async(
+        request=request,
+        current_time=datetime.now(),
+        url_for=url_for
+    )
+    return HTMLResponse(content=html)
+
+
+@router.get("/health")
+async def health():
+    """Проверка работоспособности"""
+    return {
+        "status": "ok" if is_initialized else "initializing",
+        "initialized": is_initialized,
+        "time": datetime.now().isoformat()
     }
-    
+
+
+# Добавьте в существующий main.py
+
+@router.get("/myip")
+async def get_my_ip():
+    """Получить реальный IP выхода в интернет"""
+    if not is_initialized:
+        await init_monitors()
+
+    location_data = await monitor_facade.location.get_location()
+    return JSONResponse(content={
+        "ip": location_data.get("ip"),
+        "country": location_data.get("country"),
+        "vpn_detected": location_data.get("wpn_flag", False),
+        "details": location_data
+    })
+
+@router.get("/all_data")
+async def get_all_data(request: Request):
+    """Получить все данные разом (включая геолокацию)"""
+    if not is_initialized:
+        await init_monitors()
+
+    try:
+        data = await monitor_facade.get_all_data(request)
+        return JSONResponse(content=data)
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/location")
+async def get_location(request: Request):
+    """Получить информацию о местоположении"""
+    if not is_initialized:
+        await init_monitors()
+
+    try:
+        location_data = await monitor_facade.get_location_data(request)
+        return JSONResponse(content=location_data)
+    except Exception as e:
+        logger.error(f"Ошибка получения геолокации: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/stream/all")
+async def stream_all(request: Request):
+    """Поток всех данных (Server-Sent Events)"""
+    if not is_initialized:
+        await init_monitors()
+
+    async def generate():
+        try:
+            while True:
+                data = await monitor_facade.get_all_data(request)
+                yield f"data: {json.dumps(data, default=str)}\n\n"
+                await asyncio.sleep(1)  # Обновление каждую секунду
+        except Exception as e:
+            logger.error(f"Ошибка в стриме: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
+
+
+@router.get("/stream/{monitor_name}")
+async def stream_single(monitor_name: str):
+    """Поток данных от конкретного монитора"""
+    if not is_initialized:
+        await init_monitors()
+
+    # Ищем монитор (без учета регистра)
+    monitor = None
+    for name, mon in monitor_facade.monitors.items():
+        if monitor_name.lower() in name.lower():
+            monitor = mon
+            break
+
+    if not monitor:
+        available = list(monitor_facade.monitors.keys())
+        raise HTTPException(
+            status_code=404,
+            detail=f"Монитор '{monitor_name}' не найден. Доступны: {available}"
+        )
+
+    async def generate():
+        try:
+            async for chunk in monitor.stream():
+                yield chunk
+                await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
+
+
+@router.post("/init")
+async def force_init():
+    """Принудительная инициализация"""
+    result = await init_monitors()
+    return {
+        "success": result,
+        "initialized": is_initialized,
+        "monitors": list(monitor_facade.monitors.keys()) if monitor_facade else []
+    }
+
+
+@router.get("/debug")
+async def debug(request: Request):
+    """Отладочная информация"""
+    if not is_initialized:
+        await init_monitors()
+
+    result = {
+        "initialized": is_initialized,
+        "monitors": list(monitor_facade.monitors.keys()) if monitor_facade else [],
+        "data": {}
+    }
+
     for name, monitor in monitor_facade.monitors.items():
         try:
-            # measure
-            measure_result = await monitor.measure()
-            data['measurements'][name] = {
-                'value': measure_result,
-                'status': 'ok'
-            }
-            
-            # detailed_info
-            if hasattr(monitor, 'detailed_info'):
-                detailed_result = await monitor.detailed_info()
-                data['detailed_info'][name] = {
-                    'value': detailed_result,
-                    'status': 'ok'
-                }
-            
+            value = await monitor.measure()
+            result["data"][name] = value
         except Exception as e:
-            data['measurements'][name] = {
-                'error': str(e),
-                'status': 'error'
-            }
-            
-    return jsonify(data)
+            result["data"][name] = f"Ошибка: {e}"
 
-# Вспомогательная функция для запуска асинхронного генератора в синхронном контексте
-def run_async_generator(async_gen):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Добавляем геоданные в debug
     try:
-        while True:
-            try:
-                chunk = loop.run_until_complete(async_gen.__anext__())
-                yield chunk
-            except StopAsyncIteration:
-                break
-    finally:
-        loop.close()
+        location_data = await monitor_facade.get_location_data(request)
+        result["location"] = location_data
+    except Exception as e:
+        result["location"] = {"error": str(e)}
 
-# SSE потоки - ВСЕ должны быть синхронными функциями
-@main.route('/cpu')
-def cpu_stream():
-    async def generate():
-        async for chunk in monitor_facade.monitors['cpu'].stream():
-            yield chunk
-    
-    return Response(
-        run_async_generator(generate()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*'
-        }
-    )
-
-@main.route('/ram')
-def ram_stream():
-    async def generate():
-        async for chunk in monitor_facade.monitors['ram'].stream():
-            yield chunk
-    
-    return Response(
-        run_async_generator(generate()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*'
-        }
-    )
-
-@main.route('/gpu')
-def gpu_stream():
-    async def generate():
-        gpu_monitor = monitor_facade.monitors['gpu']
-        while True:
-            try:
-                value = await gpu_monitor.measure()
-                details = await gpu_monitor.detailed_info()
-                data = {
-                    'gpu': value,
-                    'details': details
-                }
-                yield f"data: {json.dumps(data)}\n\n"
-            except Exception as e:
-                error_data = {'gpu': 0, 'error': str(e)}
-                yield f"data: {json.dumps(error_data)}\n\n"
-            await asyncio.sleep(gpu_monitor.interval)
-    
-    return Response(
-        run_async_generator(generate()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*'
-        }
-    )
-
-@main.route('/network')
-def network_stream():
-    # Проверяем, какой ключ используется для сетевого монитора
-    network_key = None
-    for key in monitor_facade.monitors.keys():
-        if 'network' in key.lower():
-            network_key = key
-            break
-    
-    if network_key is None:
-        # Если сетевой монитор не найден, возвращаем ошибку
-        def error_generate():
-            yield f"data: {json.dumps({'error': 'Network monitor not found'})}\n\n"
-        return Response(
-            error_generate(),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*'
-            }
-        )
-    
-    async def generate():
-        async for chunk in monitor_facade.monitors[network_key].stream():
-            yield chunk
-    
-    return Response(
-        run_async_generator(generate()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*'
-        }
-    )
+    return result
